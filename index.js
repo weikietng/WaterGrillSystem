@@ -3,7 +3,14 @@ const mongoose = require("mongoose");
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { Client, Collection, Events, GatewayIntentBits } = require("discord.js");
+const {
+  Client,
+  Collection,
+  Events,
+  GatewayIntentBits,
+  EmbedBuilder,
+  Embed,
+} = require("discord.js");
 
 const client = new Client({
   intents: [
@@ -40,9 +47,97 @@ for (const folder of commandFolders) {
   }
 }
 
-client.once(Events.ClientReady, (readyClient) => {
+client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Ready! Logged in as ${readyClient.user.tag}`);
   mongoose.connect(process.env.MONGO_URI);
+  const messageStore = require("./schemas/importantMessagesSchema");
+  const guild = await client.guilds.cache.get(process.env.GUILD_ID);
+  const channel = await guild.channels.cache.find(
+    (channel) => channel.name === "sessions"
+  );
+  function sessionMessage(){
+    let sessionCount = 0;
+    let description = `# Session Information\nBelow here are all of our upcoming sessions.\n\n`;
+
+    const options = {
+      method: "GET",
+      headers: { Authorization: `Bearer ${process.env.HYRA_KEY}` },
+    };
+    fetch(
+      `https://api.hyra.io/activity/sessions/${process.env.HYRA_WORKSPACE}/upcoming`,
+      options
+    )
+      .then((response) => response.json())
+      .then((sessions) => {
+        sessions.forEach((session) => {
+          if (
+            session.host &&
+            session.host.exists &&
+            session.co_host &&
+            session.co_host.exists
+          ) {
+            sessionCount++;
+            let sessionTime = session.start;
+            let epochTime = new Date(sessionTime).getTime() / 1000;
+            if (sessionCount === 1) {
+              description += `## Next Session: \n**${session.schedule.name}**\nHosted by **${session.host.username}** & **${session.co_host.username}** \nTime: <t:${epochTime}:f> (<t:${epochTime}:R>)`;
+            } else if (sessionCount === 2) {
+              description += `\n\n## Upcoming Sessions: \n**${session.schedule.name}**\nHosted by **${session.host.username}** & **${session.co_host.username}** \nTime: <t:${epochTime}:f> (<t:${epochTime}:R>)`;
+            } else {
+              description += `\n\n**${session.schedule.name}**\nHosted by **${session.host.username}** & **${session.co_host.username}** \n Time: <t:${epochTime}:f> (<t:${epochTime}:R>)`;
+            }
+          }
+        });
+        if (sessionCount === 0) {
+          description =
+            "No upcoming sessions are scheduled. Please come back to the channel and check again later.";
+        }
+        description += `\n\n\n*This message is automatically refreshed every 2 minutes.*`;
+        const embed = new EmbedBuilder()
+          .setDescription(description)
+          .setFooter({ text: "Water Grill Sessions" })
+          .setColor("#ffe1a2")
+          .setTimestamp();
+        messageStore
+          .findOne({ messageName: "sessions" })
+          .then(async (doc) => {
+            if (doc) {
+              channel.messages
+              .fetch(doc.messageId)
+              .then(async (message) => {
+                if (!message) {
+                  let newMessage = await channel.send({ embeds: [embed] });
+                  await messageStore.findOneAndUpdate(
+                    { messageName: "sessions" },
+                    { messageId: newMessage.id }
+                  );
+                  return;
+                }
+                await message
+                  .edit({ embeds: [embed] })
+                  .catch((error) =>
+                    console.error(`Error editing message: ${error}`)
+                  );
+              })
+              .catch((error) =>
+                console.error(`Error fetching message: ${error}`)
+              );
+            } else {
+              let message = await channel.send({ embeds: [embed] });
+            await messageStore.create({
+              messageId: message.id,
+              messageName: "sessions",
+            })
+            }
+          })
+          .catch((err) => console.error(err));
+      })
+      .catch((err) => console.error(err));
+  }
+  sessionMessage();
+  setInterval(() => {
+    sessionMessage();
+  }, 120000);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
